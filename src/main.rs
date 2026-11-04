@@ -104,7 +104,7 @@ async fn get_auth_headers(
 struct Args {
     image: Option<String>,
 
-    #[arg(short, long)]
+    #[arg(short = 'P', long)]
     platform: Option<String>,
 
     #[arg(long)]
