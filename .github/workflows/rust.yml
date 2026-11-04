@@ -19,22 +19,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - TARGET: i686-unknown-linux-musl
-            OS: ubuntu-latest
           - TARGET: x86_64-unknown-linux-musl
             OS: ubuntu-latest
           - TARGET: aarch64-unknown-linux-musl
             OS: ubuntu-latest
-          - TARGET: armv7-unknown-linux-musleabihf
-            OS: ubuntu-latest
-          - TARGET: armv7-unknown-linux-musleabi
-            OS: ubuntu-latest
-          - TARGET: arm-unknown-linux-musleabihf
-            OS: ubuntu-latest
-          - TARGET: arm-unknown-linux-musleabi
-            OS: ubuntu-latest
-          - TARGET: i686-pc-windows-msvc
-            OS: windows-latest
           - TARGET: x86_64-pc-windows-msvc
             OS: windows-latest
 
