@@ -69,110 +69,29 @@ impl ClientBuilderDnsExt for ClientBuilder {
     }
 }
 // =========================================================================
-// 2. Auth 认证逻辑 (已修复 401 问题)
+// 2. Auth 认证逻辑 (针对不支持 Token 颁发、需直接 Basic 认证的私有仓库)
 // =========================================================================
-fn parse_www_authenticate(header_val: &str) -> (Option<String>, HashMap<String, String>) {
-    let mut params = HashMap::new();
-    if !header_val.starts_with("Bearer ") && !header_val.starts_with("bearer ") {
-        return (None, params);
-    }
-
-    let auth_str = &header_val[7..];
-    for part in auth_str.split(',') {
-        let part = part.trim();
-        if let Some((k, v)) = part.split_once('=') {
-            let k = k.trim().to_string();
-            let v = v.trim().trim_matches('"').to_string();
-            params.insert(k, v);
-        }
-    }
-
-    let realm = params.remove("realm");
-    (realm, params)
-}
-
 async fn get_auth_headers(
-    client: &reqwest::Client,
+    _client: &reqwest::Client,
     accept_type: &str,
-    registry: &str,
-    repository: &str,
+    _registry: &str,
+    _repository: &str,
     username: Option<&str>,
     password: Option<&str>,
 ) -> reqwest::header::HeaderMap {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(reqwest::header::ACCEPT, accept_type.parse().unwrap());
 
-    let test_url = format!("https://{}/v2/", registry);
-    let resp = client.get(&test_url).send().await;
-
-    let mut realm = None;
-    let mut service = None;
-
-    if let Ok(r) = resp {
-        if let Some(auth_header) = r.headers().get(reqwest::header::WWW_AUTHENTICATE) {
-            if let Ok(auth_str) = auth_header.to_str() {
-                let (r_url, params) = parse_www_authenticate(auth_str);
-                realm = r_url;
-                service = params.get("service").cloned();
-            }
-        }
-    }
-
-    // 1. 如果检测到 realm，尝试通过 Token 机制认证
-    if let Some(realm_url) = realm {
-        let service_param = service.unwrap_or_else(|| registry.to_string());
-        let token_url = format!(
-            "{}?service={}&scope=repository:{}:pull",
-            realm_url, service_param, repository
-        );
-
-        let mut token_req = client.get(&token_url);
-
-        if let (Some(u), Some(p)) = (username, password) {
-            let creds = BASE64.encode(format!("{}:{}", u, p));
-            token_req = token_req.header(
-                reqwest::header::AUTHORIZATION,
-                format!("Basic {}", creds),
-            );
-        }
-
-        match token_req.send().await {
-            Ok(token_resp) => {
-                if token_resp.status().is_success() {
-                    if let Ok(json) = token_resp.json::<Value>().await {
-                        let token = json
-                            .get("token")
-                            .or_else(|| json.get("access_token"))
-                            .and_then(|v| v.as_str());
-
-                        if let Some(t) = token {
-                            headers.insert(
-                                reqwest::header::AUTHORIZATION,
-                                format!("Bearer {}", t).parse().unwrap(),
-                            );
-                            return headers; // Token 获取成功，直接返回带 Bearer 的 headers
-                        }
-                    }
-                } else {
-                    let status = token_resp.status();
-                    let err_text = token_resp.text().await.unwrap_or_default();
-                    eprintln!("⚠️ 警告: 向认证服务器换取 Token 失败 [HTTP {}]: {}", status, err_text);
-                }
-            }
-            Err(e) => {
-                eprintln!("⚠️ 警告: 请求 Token 发生网络错误: {}", e);
-            }
-        }
-    }
-
-    // 2. 兜底逻辑：如果未通过 Token 成功认证，但用户传入了账号密码，直接尝试 HTTP Basic 认证
+    // 直接注入 HTTP Basic 认证
     if let (Some(u), Some(p)) = (username, password) {
         let creds = BASE64.encode(format!("{}:{}", u, p));
         headers.insert(
             reqwest::header::AUTHORIZATION,
             format!("Basic {}", creds).parse().unwrap(),
         );
-        println!("💡 提示: 已切换为直接 Basic Auth 认证模式。");
+        println!("🔐 已启用 HTTP Basic 认证模式进行直接鉴权。");
+    } else {
+        println!("⚠️ 警告: 未提供用户名或密码，将尝试匿名访问。");
     }
 
     headers
