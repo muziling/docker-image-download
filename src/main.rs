@@ -68,9 +68,8 @@ impl ClientBuilderDnsExt for ClientBuilder {
         self
     }
 }
-
 // =========================================================================
-// 2. Auth 认证逻辑
+// 2. Auth 认证逻辑 (已修复 401 问题)
 // =========================================================================
 fn parse_www_authenticate(header_val: &str) -> (Option<String>, HashMap<String, String>) {
     let mut params = HashMap::new();
@@ -119,45 +118,65 @@ async fn get_auth_headers(
         }
     }
 
-    let token_endpoint = realm.unwrap_or_else(|| format!("https://{}/v2/token", registry));
-    let service_param = service.unwrap_or_else(|| registry.to_string());
-
-    let token_url = format!(
-        "{}?service={}&scope=repository:{}:pull",
-        token_endpoint, service_param, repository
-    );
-
-    let mut token_req = client.get(&token_url);
-
-    if let (Some(u), Some(p)) = (username, password) {
-        let creds = BASE64.encode(format!("{}:{}", u, p));
-        token_req = token_req.header(
-            reqwest::header::AUTHORIZATION,
-            format!("Basic {}", creds),
+    // 1. 如果检测到 realm，尝试通过 Token 机制认证
+    if let Some(realm_url) = realm {
+        let service_param = service.unwrap_or_else(|| registry.to_string());
+        let token_url = format!(
+            "{}?service={}&scope=repository:{}:pull",
+            realm_url, service_param, repository
         );
-    }
 
-    if let Ok(token_resp) = token_req.send().await {
-        if token_resp.status().is_success() {
-            if let Ok(json) = token_resp.json::<Value>().await {
-                let token = json
-                    .get("token")
-                    .or_else(|| json.get("access_token"))
-                    .and_then(|v| v.as_str());
+        let mut token_req = client.get(&token_url);
 
-                if let Some(t) = token {
-                    headers.insert(
-                        reqwest::header::AUTHORIZATION,
-                        format!("Bearer {}", t).parse().unwrap(),
-                    );
+        if let (Some(u), Some(p)) = (username, password) {
+            let creds = BASE64.encode(format!("{}:{}", u, p));
+            token_req = token_req.header(
+                reqwest::header::AUTHORIZATION,
+                format!("Basic {}", creds),
+            );
+        }
+
+        match token_req.send().await {
+            Ok(token_resp) => {
+                if token_resp.status().is_success() {
+                    if let Ok(json) = token_resp.json::<Value>().await {
+                        let token = json
+                            .get("token")
+                            .or_else(|| json.get("access_token"))
+                            .and_then(|v| v.as_str());
+
+                        if let Some(t) = token {
+                            headers.insert(
+                                reqwest::header::AUTHORIZATION,
+                                format!("Bearer {}", t).parse().unwrap(),
+                            );
+                            return headers; // Token 获取成功，直接返回带 Bearer 的 headers
+                        }
+                    }
+                } else {
+                    let status = token_resp.status();
+                    let err_text = token_resp.text().await.unwrap_or_default();
+                    eprintln!("⚠️ 警告: 向认证服务器换取 Token 失败 [HTTP {}]: {}", status, err_text);
                 }
+            }
+            Err(e) => {
+                eprintln!("⚠️ 警告: 请求 Token 发生网络错误: {}", e);
             }
         }
     }
 
+    // 2. 兜底逻辑：如果未通过 Token 成功认证，但用户传入了账号密码，直接尝试 HTTP Basic 认证
+    if let (Some(u), Some(p)) = (username, password) {
+        let creds = BASE64.encode(format!("{}:{}", u, p));
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            format!("Basic {}", creds).parse().unwrap(),
+        );
+        println!("💡 提示: 已切换为直接 Basic Auth 认证模式。");
+    }
+
     headers
 }
-
 // =========================================================================
 // 3. CLI 参数
 // =========================================================================
